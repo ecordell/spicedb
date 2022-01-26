@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sync"
 
-	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
-
 	v0 "github.com/authzed/authzed-go/proto/authzed/api/v0"
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/authzed/grpcutil"
@@ -22,12 +20,14 @@ import (
 	"github.com/authzed/spicedb/internal/datastore"
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
+	"github.com/authzed/spicedb/internal/middleware/consistency"
 	"github.com/authzed/spicedb/internal/middleware/handwrittenvalidation"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/services/serviceerrors"
 	"github.com/authzed/spicedb/internal/services/shared"
 	"github.com/authzed/spicedb/internal/sharederrors"
+	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
 	"github.com/authzed/spicedb/pkg/zookie"
 )
@@ -71,10 +71,7 @@ func NewACLServer(ds datastore.Datastore, nsm namespace.Manager, dispatch dispat
 }
 
 func (as *aclServer) Write(ctx context.Context, req *v0.WriteRequest) (*v0.WriteResponse, error) {
-	atRevision, err := as.ds.HeadRevision(ctx)
-	if err != nil {
-		return nil, rewriteACLError(ctx, err)
-	}
+	atRevision, _ := consistency.MustRevisionFromContext(ctx)
 
 	for _, mutation := range req.Updates {
 		err := validateTupleWrite(ctx, mutation.Tuple, as.nsm, atRevision)
@@ -258,20 +255,13 @@ func (as *aclServer) Read(ctx context.Context, req *v0.ReadRequest) (*v0.ReadRes
 }
 
 func (as *aclServer) Check(ctx context.Context, req *v0.CheckRequest) (*v0.CheckResponse, error) {
-	atRevision, err := as.pickBestRevision(ctx, req.AtRevision)
-	if err != nil {
-		return nil, rewriteACLError(ctx, err)
-	}
+	atRevision, _ := consistency.MustRevisionFromContext(ctx)
 
 	return as.commonCheck(ctx, atRevision, req.TestUserset, req.User.GetUserset())
 }
 
 func (as *aclServer) ContentChangeCheck(ctx context.Context, req *v0.ContentChangeCheckRequest) (*v0.CheckResponse, error) {
-	atRevision, err := as.ds.HeadRevision(ctx)
-	if err != nil {
-		return nil, rewriteACLError(ctx, err)
-	}
-
+	atRevision, _ := consistency.MustRevisionFromContext(ctx)
 	return as.commonCheck(ctx, atRevision, req.TestUserset, req.User.GetUserset())
 }
 
@@ -337,12 +327,9 @@ func (as *aclServer) commonCheck(
 }
 
 func (as *aclServer) Expand(ctx context.Context, req *v0.ExpandRequest) (*v0.ExpandResponse, error) {
-	atRevision, err := as.pickBestRevision(ctx, req.AtRevision)
-	if err != nil {
-		return nil, rewriteACLError(ctx, err)
-	}
+	atRevision, _ := consistency.MustRevisionFromContext(ctx)
 
-	err = as.nsm.CheckNamespaceAndRelation(ctx, req.Userset.Namespace, req.Userset.Relation, false, atRevision)
+	err := as.nsm.CheckNamespaceAndRelation(ctx, req.Userset.Namespace, req.Userset.Relation, false, atRevision)
 	if err != nil {
 		return nil, rewriteACLError(ctx, err)
 	}
@@ -367,12 +354,9 @@ func (as *aclServer) Expand(ctx context.Context, req *v0.ExpandRequest) (*v0.Exp
 }
 
 func (as *aclServer) Lookup(ctx context.Context, req *v0.LookupRequest) (*v0.LookupResponse, error) {
-	atRevision, err := as.pickBestRevision(ctx, req.AtRevision)
-	if err != nil {
-		return nil, rewriteACLError(ctx, err)
-	}
+	atRevision, _ := consistency.MustRevisionFromContext(ctx)
 
-	err = as.nsm.CheckNamespaceAndRelation(ctx, req.User.Namespace, req.User.Relation, true, atRevision)
+	err := as.nsm.CheckNamespaceAndRelation(ctx, req.User.Namespace, req.User.Relation, true, atRevision)
 	if err != nil {
 		return nil, rewriteACLError(ctx, err)
 	}
@@ -421,28 +405,6 @@ func (as *aclServer) Lookup(ctx context.Context, req *v0.LookupRequest) (*v0.Loo
 		Revision:          zookie.NewFromRevision(atRevision),
 		ResolvedObjectIds: resolvedObjectIDs,
 	}, nil
-}
-
-func (as *aclServer) pickBestRevision(ctx context.Context, requested *v0.Zookie) (decimal.Decimal, error) {
-	// Calculate a revision as we see fit
-	databaseRev, err := as.ds.OptimizedRevision(ctx)
-	if err != nil {
-		return decimal.Zero, err
-	}
-
-	if requested != nil {
-		requestedRev, err := zookie.DecodeRevision(requested)
-		if err != nil {
-			return decimal.Zero, errInvalidZookie
-		}
-
-		if requestedRev.GreaterThan(databaseRev) {
-			return requestedRev, nil
-		}
-		return databaseRev, nil
-	}
-
-	return databaseRev, nil
 }
 
 func rewriteACLError(ctx context.Context, err error) error {

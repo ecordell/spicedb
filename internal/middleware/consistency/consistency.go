@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	v0 "github.com/authzed/authzed-go/proto/authzed/api/v0"
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
@@ -15,10 +16,15 @@ import (
 	"github.com/authzed/spicedb/internal/datastore"
 	"github.com/authzed/spicedb/internal/services/serviceerrors"
 	"github.com/authzed/spicedb/pkg/zedtoken"
+	"github.com/authzed/spicedb/pkg/zookie"
 )
 
 type hasConsistency interface {
 	GetConsistency() *v1.Consistency
+}
+
+type hasAtRevision interface {
+	GetAtRevision() *v0.Zookie
 }
 
 type ctxKeyType struct{}
@@ -61,18 +67,42 @@ func MustRevisionFromContext(ctx context.Context) (decimal.Decimal, *v1.ZedToken
 // AddRevisionToContext adds a revision to the given context, based on the consistency block found
 // in the given request (if applicable).
 func AddRevisionToContext(ctx context.Context, req interface{}, ds datastore.Datastore) error {
-	reqWithConsistency, ok := req.(hasConsistency)
-	if !ok {
+	switch req := req.(type) {
+	case hasConsistency:
+		return addRevisionToContextFromConsistency(ctx, req, ds)
+	case hasAtRevision:
+		return addRevisionToContextFromAtRevision(ctx, req, ds)
+	default:
+		return addHeadRevision(ctx, ds)
+	}
+}
+
+// addHeadRevision adds a revision to the given context, based on the consistency block found
+// in the given request (if applicable).
+func addHeadRevision(ctx context.Context, ds datastore.Datastore) error {
+	handle := ctx.Value(revisionKey)
+	if handle == nil {
 		return nil
 	}
 
+	revision, err := ds.HeadRevision(ctx)
+	if err != nil {
+		return rewriteDatastoreError(ctx, err)
+	}
+	handle.(*revisionHandle).revision = revision
+	return nil
+}
+
+// addRevisionToContextFromConsistency adds a revision to the given context, based on the consistency block found
+// in the given request (if applicable).
+func addRevisionToContextFromConsistency(ctx context.Context, req hasConsistency, ds datastore.Datastore) error {
 	handle := ctx.Value(revisionKey)
 	if handle == nil {
 		return nil
 	}
 
 	var revision decimal.Decimal
-	consistency := reqWithConsistency.GetConsistency()
+	consistency := req.GetConsistency()
 
 	switch {
 	case consistency == nil || consistency.GetMinimizeLatency():
@@ -118,6 +148,21 @@ func AddRevisionToContext(ctx context.Context, req interface{}, ds datastore.Dat
 		return fmt.Errorf("missing handling of consistency case in %v", consistency)
 	}
 
+	handle.(*revisionHandle).revision = revision
+	return nil
+}
+
+// addRevisionToContextFromAtRevision adds a revision to the given context, based on the AtRevision field (v0 api only)
+func addRevisionToContextFromAtRevision(ctx context.Context, req hasAtRevision, ds datastore.Datastore) error {
+	handle := ctx.Value(revisionKey)
+	if handle == nil {
+		return nil
+	}
+
+	revision, err := pickBestRevisionV0(ctx, req.GetAtRevision(), ds)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, err.Error())
+	}
 	handle.(*revisionHandle).revision = revision
 	return nil
 }
@@ -175,6 +220,28 @@ func pickBestRevision(ctx context.Context, requested *v1.ZedToken, ds datastore.
 
 	if requested != nil {
 		requestedRev, err := zedtoken.DecodeRevision(requested)
+		if err != nil {
+			return decimal.Zero, errInvalidZedToken
+		}
+
+		if requestedRev.GreaterThan(databaseRev) {
+			return requestedRev, nil
+		}
+		return databaseRev, nil
+	}
+
+	return databaseRev, nil
+}
+
+func pickBestRevisionV0(ctx context.Context, requested *v0.Zookie, ds datastore.Datastore) (decimal.Decimal, error) {
+	// Calculate a revision as we see fit
+	databaseRev, err := ds.OptimizedRevision(ctx)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	if requested != nil {
+		requestedRev, err := zookie.DecodeRevision(requested)
 		if err != nil {
 			return decimal.Zero, errInvalidZedToken
 		}

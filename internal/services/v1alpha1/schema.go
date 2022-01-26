@@ -4,22 +4,22 @@ import (
 	"context"
 	"errors"
 
-	v1alpha1 "github.com/authzed/authzed-go/proto/authzed/api/v1alpha1"
+	"github.com/authzed/authzed-go/proto/authzed/api/v1alpha1"
 	"github.com/authzed/grpcutil"
 	grpcmw "github.com/grpc-ecosystem/go-grpc-middleware"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
-
 	"github.com/authzed/spicedb/internal/datastore"
+	"github.com/authzed/spicedb/internal/middleware/consistency"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/services/serviceerrors"
 	"github.com/authzed/spicedb/internal/services/shared"
 	"github.com/authzed/spicedb/internal/sharederrors"
 	nspkg "github.com/authzed/spicedb/pkg/namespace"
+	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/compiler"
 	"github.com/authzed/spicedb/pkg/schemadsl/generator"
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
@@ -62,10 +62,7 @@ func NewSchemaServer(ds datastore.Datastore, prefixRequired PrefixRequiredOption
 }
 
 func (ss *schemaServiceServer) ReadSchema(ctx context.Context, in *v1alpha1.ReadSchemaRequest) (*v1alpha1.ReadSchemaResponse, error) {
-	headRevision, err := ss.ds.HeadRevision(ctx)
-	if err != nil {
-		return nil, rewriteError(ctx, err)
-	}
+	headRevision, _ := consistency.MustRevisionFromContext(ctx)
 
 	numRequested := len(in.GetObjectDefinitionsNames())
 
@@ -121,10 +118,7 @@ func (ss *schemaServiceServer) WriteSchema(ctx context.Context, in *v1alpha1.Wri
 		return nil, rewriteError(ctx, err)
 	}
 
-	headRevision, err := ss.ds.HeadRevision(ctx)
-	if err != nil {
-		return nil, rewriteError(ctx, err)
-	}
+	headRevision, _ := consistency.MustRevisionFromContext(ctx)
 
 	log.Ctx(ctx).Trace().Interface("namespaceDefinitions", nsdefs).Msg("compiled namespace definitions")
 

@@ -19,6 +19,7 @@ import (
 	"github.com/authzed/spicedb/internal/auth"
 	"github.com/authzed/spicedb/internal/datastore"
 	"github.com/authzed/spicedb/internal/dispatch"
+	consistencymw "github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	dispatchmw "github.com/authzed/spicedb/internal/middleware/dispatcher"
 	"github.com/authzed/spicedb/internal/middleware/servicespecific"
@@ -75,6 +76,7 @@ func DefaultMiddleware(logger zerolog.Logger, presharedKey string, dispatcher di
 			grpcprom.UnaryServerInterceptor,
 			dispatchmw.UnaryServerInterceptor(dispatcher),
 			datastoremw.UnaryServerInterceptor(ds),
+			consistencymw.UnaryServerInterceptor(ds),
 			servicespecific.UnaryServerInterceptor,
 		}, []grpc.StreamServerInterceptor{
 			requestid.StreamServerInterceptor(requestid.GenerateIfMissing(true)),
@@ -85,6 +87,7 @@ func DefaultMiddleware(logger zerolog.Logger, presharedKey string, dispatcher di
 			grpcprom.StreamServerInterceptor,
 			dispatchmw.StreamServerInterceptor(dispatcher),
 			datastoremw.StreamServerInterceptor(ds),
+			consistencymw.StreamServerInterceptor(ds),
 			servicespecific.StreamServerInterceptor,
 		}
 }
