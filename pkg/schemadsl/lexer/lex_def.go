@@ -60,6 +60,14 @@ var keywords = map[string]bool{
 	"nil":        true,
 }
 
+func KeywordSet() map[string]struct{} {
+	set := make(map[string]struct{}, 0)
+	for k := range keywords {
+		set[k] = struct{}{}
+	}
+	return set
+}
+
 // syntheticPredecessors contains the full set of token types after which, if a newline is found,
 // we emit a synthetic semicolon rather than a normal newline token.
 var syntheticPredecessors = map[TokenType]bool{

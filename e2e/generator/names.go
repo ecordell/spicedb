@@ -1,6 +1,10 @@
 package generator
 
-import "github.com/brianvoe/gofakeit/v6"
+import (
+	"github.com/brianvoe/gofakeit/v6"
+
+	"github.com/authzed/spicedb/pkg/schemadsl/lexer"
+)
 
 type UniqueGenerator struct {
 	seen  map[string]struct{}
@@ -9,7 +13,7 @@ type UniqueGenerator struct {
 
 func NewUniqueGenerator(regex string) *UniqueGenerator {
 	return &UniqueGenerator{
-		seen:  make(map[string]struct{}, 0),
+		seen:  lexer.KeywordSet(),
 		regex: regex,
 	}
 }
