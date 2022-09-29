@@ -1,0 +1,4 @@
+BEGIN;
+ALTER TABLE namespace_config DROP CONSTRAINT IF EXISTS pk_namespace_config;
+ALTER TABLE namespace_config ADD COLUMN id BIGSERIAL PRIMARY KEY;
+COMMIT;
