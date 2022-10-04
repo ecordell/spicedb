@@ -139,11 +139,11 @@ func BeginTxFunc(ctx context.Context, db *sql.DB, txOptions *sql.TxOptions, f fu
 // WriteVersion overwrites the _meta_version_ column name which encodes the version
 // of the database schema.
 func (driver *MySQLDriver) WriteVersion(ctx context.Context, txWrapper TxWrapper, version, replaced string) error {
-	stmt := fmt.Sprintf("ALTER TABLE %s CHANGE %s %s VARCHAR(255) NOT NULL",
-		driver.tables.migrationVersion(),
+	stmt := fmt.Sprintf("ALTER TABLE mysql_migration_version CHANGE %s %s VARCHAR(255) NOT NULL",
 		revisionToColumnName(replaced),
 		revisionToColumnName(version),
 	)
+	fmt.Println(stmt)
 	if _, err := txWrapper.tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("unable to write version: %w", err)
 	}

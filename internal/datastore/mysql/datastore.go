@@ -435,7 +435,7 @@ func (mds *Datastore) IsReady(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	compatible, err := migrations.Manager.IsHeadCompatible(currentMigrationRevision)
+	compatible, err := migrations.DatabaseMigrations.IsHeadCompatible(currentMigrationRevision)
 	if err != nil {
 		return false, err
 	}

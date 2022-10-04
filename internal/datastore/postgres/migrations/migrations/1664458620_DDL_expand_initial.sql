@@ -29,4 +29,8 @@ CREATE TABLE relation_tuple (
     CONSTRAINT uq_relation_tuple_living UNIQUE (namespace, object_id, relation, userset_namespace, userset_object_id, userset_relation, deleted_transaction)
 );
 
+CREATE TABLE alembic_version (
+    version_num VARCHAR NOT NULL
+);
+
 COMMIT;

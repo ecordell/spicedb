@@ -1,0 +1,1 @@
+ALTER TABLE namespace_config DROP PRIMARY KEY;

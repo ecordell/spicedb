@@ -1,6 +1,3 @@
-//go:build ci
-// +build ci
-
 package mysql
 
 import (
@@ -581,13 +578,13 @@ func TestMySQLMigrations(t *testing.T) {
 	req.NoError(err)
 	req.Equal("", version)
 
-	err = migrations.Manager.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
+	err = migrations.DatabaseMigrations.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
 	req.NoError(err)
 
 	version, err = migrationDriver.Version(context.Background())
 	req.NoError(err)
 
-	headVersion, err := migrations.Manager.HeadRevision()
+	headVersion, err := migrations.DatabaseMigrations.HeadRevision()
 	req.NoError(err)
 	req.Equal(headVersion, version)
 }
@@ -603,13 +600,13 @@ func TestMySQLMigrationsWithPrefix(t *testing.T) {
 	req.NoError(err)
 	req.Equal("", version)
 
-	err = migrations.Manager.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
+	err = migrations.DatabaseMigrations.Run(context.Background(), migrationDriver, migrate.Head, migrate.LiveRun)
 	req.NoError(err)
 
 	version, err = migrationDriver.Version(context.Background())
 	req.NoError(err)
 
-	headVersion, err := migrations.Manager.HeadRevision()
+	headVersion, err := migrations.DatabaseMigrations.HeadRevision()
 	req.NoError(err)
 	req.Equal(headVersion, version)
 

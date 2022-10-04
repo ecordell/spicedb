@@ -3,9 +3,11 @@ package migrations
 import (
 	"context"
 	"embed"
+	"fmt"
 	"io"
 	"path"
 	"strings"
+	"testing/fstest"
 
 	"github.com/authzed/spicedb/pkg/migrate"
 
@@ -50,14 +52,7 @@ func init() {
 			panic("failed to load migration " + fileName + ": " + err.Error())
 		}
 		previous := version
-		version = strings.TrimSuffix(migration.Name(), ".sql")
-		version = strings.TrimSuffix(version, ".sh")
-		version = version[11:] // trim epoch
-		version = strings.TrimPrefix(version, "DDL_")
-		version = strings.TrimPrefix(version, "DML_")
-		version = strings.TrimPrefix(version, "go_")
-		version = strings.TrimPrefix(version, "expand_")
-		version = strings.TrimPrefix(version, "contract_")
+		version = versionFromFileName(migration.Name())
 
 		if strings.HasSuffix(migration.Name(), "sql") {
 			sqlBytes, err := io.ReadAll(file)
@@ -91,6 +86,36 @@ func init() {
 			}
 		}
 	}
+}
+
+func Export(outDir string) (error, fstest.MapFS) {
+	migrationFiles, err := migrationFS.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("failed to load migrations: %w", err), nil
+	}
+	outFiles := make(fstest.MapFS, len(migrationFiles))
+	for _, migration := range migrationFiles {
+		fileName := path.Join(dir, migration.Name())
+		file, err := migrationFS.Open(fileName)
+		if err != nil {
+			return fmt.Errorf("failed to load migrations: %w", err), nil
+		}
+		outFiles[path.Join(outDir, migration.Name())] = 
+	}
+}
+
+func versionFromFileName(fileName string) (version string) {
+	version = fileName
+	version = version[11:] // trim epoch
+	suffixes := []string{".sql", ".sh"}
+	for _, s := range suffixes {
+		version = strings.TrimSuffix(version, s)
+	}
+	prefixes := []string{"DDL_", "DML_", "go_", "expand_", "contract_"}
+	for _, p := range prefixes {
+		version = strings.TrimPrefix(version, p)
+	}
+	return
 }
 
 func initializeVersionTable(ctx context.Context, tx pgx.Tx) error {

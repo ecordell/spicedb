@@ -32,7 +32,7 @@ func NewMigrateCommand(programName string) *cobra.Command {
 	return &cobra.Command{
 		Use:     "migrate [revision]",
 		Short:   "execute datastore schema migrations",
-		Long:    fmt.Sprintf("Executes datastore schema migrations for the datastore.\nThe special value \"%s\" can be used to migrate to the latest revision.", color.YellowString(migrate.Head)),
+		Long:    fmt.Sprintf("Executes datastore schema migrations for the datastore.\nThe special value %q can be used to migrate to the latest revision.", color.YellowString(migrate.Head)),
 		PreRunE: server.DefaultPreRunE(programName),
 		RunE:    migrateRun,
 		Args:    cobra.ExactArgs(1),
@@ -89,7 +89,7 @@ func migrateRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			log.Fatal().Err(err).Msg("unable to create migration driver")
 		}
-		runMigration(cmd.Context(), migrationDriver, mysqlmigrations.Manager, args[0], timeout)
+		runMigration(cmd.Context(), migrationDriver, mysqlmigrations.DatabaseMigrations, args[0], timeout)
 	} else {
 		return fmt.Errorf("cannot migrate datastore engine type: %s", datastoreEngine)
 	}
@@ -145,7 +145,7 @@ func HeadRevision(engine string) (string, error) {
 	case "postgres":
 		return migrations.DatabaseMigrations.HeadRevision()
 	case "mysql":
-		return mysqlmigrations.Manager.HeadRevision()
+		return mysqlmigrations.DatabaseMigrations.HeadRevision()
 	case "spanner":
 		return spannermigrations.SpannerMigrations.HeadRevision()
 	default:
