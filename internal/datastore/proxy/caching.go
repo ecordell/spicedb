@@ -77,10 +77,10 @@ func (r *nsCachingReader) ReadNamespace(
 	if !found {
 		// We couldn't use the cached entry, load one
 		var err error
-		loadedRaw, err, _ = r.p.readNsGroup.Do(nsRevisionKey, func() (*cacheEntry, error) {
+		loadedRaw, err, _ = r.p.readNsGroup.Do(ctx, nsRevisionKey, func(ctx context.Context) (*cacheEntry, error) {
 			// sever the context so that another branch doesn't cancel the
 			// single-flighted namespace read
-			loaded, updatedRev, err := r.Reader.ReadNamespace(context.Background(), nsName)
+			loaded, updatedRev, err := r.Reader.ReadNamespace(ctx, nsName)
 			if err != nil && !errors.Is(err, &datastore.ErrNamespaceNotFound{}) {
 				// Propagate this error to the caller
 				return nil, err

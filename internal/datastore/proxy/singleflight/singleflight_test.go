@@ -6,6 +6,7 @@ package singleflight
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +22,7 @@ import (
 
 func TestDo(t *testing.T) {
 	var g Group[string]
-	v, err, _ := g.Do("key", func() (string, error) {
+	v, err, _ := g.Do(context.Background(), "key", func(ctx context.Context) (string, error) {
 		return "bar", nil
 	})
 	if got, want := fmt.Sprintf("%v (%T)", v, v), "bar (string)"; got != want {
@@ -35,7 +36,7 @@ func TestDo(t *testing.T) {
 func TestDoErr(t *testing.T) {
 	var g Group[*struct{}]
 	someErr := errors.New("Some error")
-	v, err, _ := g.Do("key", func() (*struct{}, error) {
+	v, err, _ := g.Do(context.Background(), "key", func(ctx context.Context) (*struct{}, error) {
 		return nil, someErr
 	})
 	if err != someErr {
@@ -51,7 +52,7 @@ func TestDoDupSuppress(t *testing.T) {
 	var wg1, wg2 sync.WaitGroup
 	c := make(chan string, 1)
 	var calls int32
-	fn := func() (string, error) {
+	fn := func(ctx context.Context) (string, error) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			// First invocation.
 			wg1.Done()
@@ -72,7 +73,7 @@ func TestDoDupSuppress(t *testing.T) {
 		go func() {
 			defer wg2.Done()
 			wg1.Done()
-			v, err, _ := g.Do("key", fn)
+			v, err, _ := g.Do(context.Background(), "key", fn)
 			if err != nil {
 				t.Errorf("Do error: %v", err)
 				return
@@ -104,7 +105,7 @@ func TestForget(t *testing.T) {
 	)
 
 	go func() {
-		g.Do("key", func() (i int, e error) {
+		g.Do(context.Background(), "key", func(ctx context.Context) (i int, e error) {
 			close(firstStarted)
 			<-unblockFirst
 			close(firstFinished)
@@ -115,7 +116,7 @@ func TestForget(t *testing.T) {
 	g.Forget("key")
 
 	unblockSecond := make(chan struct{})
-	secondResult := g.DoChan("key", func() (i int, e error) {
+	secondResult := g.DoChan(context.Background(), "key", func(ctx context.Context) (i int, e error) {
 		<-unblockSecond
 		return 2, nil
 	})
@@ -123,7 +124,7 @@ func TestForget(t *testing.T) {
 	close(unblockFirst)
 	<-firstFinished
 
-	thirdResult := g.DoChan("key", func() (i int, e error) {
+	thirdResult := g.DoChan(context.Background(), "key", func(ctx context.Context) (i int, e error) {
 		return 3, nil
 	})
 
@@ -137,7 +138,7 @@ func TestForget(t *testing.T) {
 
 func TestDoChan(t *testing.T) {
 	var g Group[string]
-	ch := g.DoChan("key", func() (string, error) {
+	ch := g.DoChan(context.Background(), "key", func(ctx context.Context) (string, error) {
 		return "bar", nil
 	})
 
@@ -156,7 +157,7 @@ func TestDoChan(t *testing.T) {
 // See https://github.com/golang/go/issues/41133
 func TestPanicDo(t *testing.T) {
 	var g Group[string]
-	fn := func() (string, error) {
+	fn := func(ctx context.Context) (string, error) {
 		panic("invalid memory address or nil pointer dereference")
 	}
 
@@ -177,7 +178,7 @@ func TestPanicDo(t *testing.T) {
 				}
 			}()
 
-			g.Do("key", fn)
+			g.Do(context.Background(), "key", fn)
 		}()
 	}
 
@@ -193,7 +194,7 @@ func TestPanicDo(t *testing.T) {
 
 func TestGoexitDo(t *testing.T) {
 	var g Group[*struct{}]
-	fn := func() (*struct{}, error) {
+	fn := func(ctx context.Context) (*struct{}, error) {
 		runtime.Goexit()
 		return nil, nil
 	}
@@ -212,7 +213,7 @@ func TestGoexitDo(t *testing.T) {
 					close(done)
 				}
 			}()
-			_, err, _ = g.Do("key", fn)
+			_, err, _ = g.Do(context.Background(), "key", fn)
 		}()
 	}
 
@@ -234,7 +235,7 @@ func TestPanicDoChan(t *testing.T) {
 		}()
 
 		g := new(Group[string])
-		ch := g.DoChan("", func() (string, error) {
+		ch := g.DoChan(context.Background(), "", func(ctx context.Context) (string, error) {
 			panic("Panicking in DoChan")
 		})
 		<-ch
@@ -279,7 +280,7 @@ func TestPanicDoSharedByDoChan(t *testing.T) {
 			defer func() {
 				recover()
 			}()
-			g.Do("", func() (string, error) {
+			g.Do(context.Background(), "", func(ctx context.Context) (string, error) {
 				close(blocked)
 				<-unblock
 				panic("Panicking in Do")
@@ -287,7 +288,7 @@ func TestPanicDoSharedByDoChan(t *testing.T) {
 		}()
 
 		<-blocked
-		ch := g.DoChan("", func() (string, error) {
+		ch := g.DoChan(context.Background(), "", func(ctx context.Context) (string, error) {
 			panic("DoChan unexpectedly executed callback")
 		})
 		close(unblock)

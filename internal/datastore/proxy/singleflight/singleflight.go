@@ -10,11 +10,14 @@ package singleflight // import "golang.org/x/sync/singleflight"
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"runtime/debug"
 	"sync"
+
+	"github.com/authzed/spicedb/pkg/datastore"
 )
 
 // errGoexit indicates the runtime.Goexit was called in
@@ -81,7 +84,7 @@ type Result[V any] struct {
 // time. If a duplicate comes in, the duplicate caller waits for the
 // original to complete and receives the same results.
 // The return value shared indicates whether v was given to multiple callers.
-func (g *Group[V]) Do(key string, fn func() (V, error)) (v V, err error, shared bool) {
+func (g *Group[V]) Do(ctx context.Context, key string, fn func(ctx context.Context) (V, error)) (v V, err error, shared bool) {
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = make(map[string]*call[V])
@@ -103,7 +106,9 @@ func (g *Group[V]) Do(key string, fn func() (V, error)) (v V, err error, shared 
 	g.m[key] = c
 	g.mu.Unlock()
 
-	g.doCall(c, key, fn)
+	// incoming ctx is replaced here
+	ctx = context.Background()
+	g.doCall(datastore.SeparateContextWithTracing(ctx), c, key, fn)
 	return c.val, c.err, c.dups > 0
 }
 
@@ -111,7 +116,7 @@ func (g *Group[V]) Do(key string, fn func() (V, error)) (v V, err error, shared 
 // results when they are ready.
 //
 // The returned channel will not be closed.
-func (g *Group[V]) DoChan(key string, fn func() (V, error)) <-chan Result[V] {
+func (g *Group[V]) DoChan(ctx context.Context, key string, fn func(ctx context.Context) (V, error)) <-chan Result[V] {
 	ch := make(chan Result[V], 1)
 	g.mu.Lock()
 	if g.m == nil {
@@ -128,13 +133,13 @@ func (g *Group[V]) DoChan(key string, fn func() (V, error)) <-chan Result[V] {
 	g.m[key] = c
 	g.mu.Unlock()
 
-	go g.doCall(c, key, fn)
+	go g.doCall(ctx, c, key, fn)
 
 	return ch
 }
 
 // doCall handles the single call for a key.
-func (g *Group[V]) doCall(c *call[V], key string, fn func() (V, error)) {
+func (g *Group[V]) doCall(ctx context.Context, c *call[V], key string, fn func(ctx context.Context) (V, error)) {
 	normalReturn := false
 	recovered := false
 
@@ -188,7 +193,7 @@ func (g *Group[V]) doCall(c *call[V], key string, fn func() (V, error)) {
 			}
 		}()
 
-		c.val, c.err = fn()
+		c.val, c.err = fn(ctx)
 		normalReturn = true
 	}()
 
