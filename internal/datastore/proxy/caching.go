@@ -9,8 +9,8 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sync/singleflight"
 
+	"github.com/authzed/spicedb/internal/datastore/proxy/singleflight"
 	"github.com/authzed/spicedb/pkg/cache"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -41,7 +41,7 @@ func NewCachingDatastoreProxy(delegate datastore.Datastore, c cache.Cache) datas
 type nsCachingProxy struct {
 	datastore.Datastore
 	c           cache.Cache
-	readNsGroup singleflight.Group
+	readNsGroup singleflight.Group[*cacheEntry]
 }
 
 func (p *nsCachingProxy) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -77,7 +77,7 @@ func (r *nsCachingReader) ReadNamespace(
 	if !found {
 		// We couldn't use the cached entry, load one
 		var err error
-		loadedRaw, err, _ = r.p.readNsGroup.Do(nsRevisionKey, func() (any, error) {
+		loadedRaw, err, _ = r.p.readNsGroup.Do(nsRevisionKey, func() (*cacheEntry, error) {
 			// sever the context so that another branch doesn't cancel the
 			// single-flighted namespace read
 			loaded, updatedRev, err := r.Reader.ReadNamespace(context.Background(), nsName)

@@ -46,32 +46,32 @@ func newPanicError(v interface{}) error {
 }
 
 // call is an in-flight or completed singleflight.Do call
-type call struct {
+type call[V any] struct {
 	wg sync.WaitGroup
 
 	// These fields are written once before the WaitGroup is done
 	// and are only read after the WaitGroup is done.
-	val interface{}
+	val V
 	err error
 
 	// These fields are read and written with the singleflight
 	// mutex held before the WaitGroup is done, and are read but
 	// not written after the WaitGroup is done.
 	dups  int
-	chans []chan<- Result
+	chans []chan<- Result[V]
 }
 
 // Group represents a class of work and forms a namespace in
 // which units of work can be executed with duplicate suppression.
-type Group struct {
-	mu sync.Mutex       // protects m
-	m  map[string]*call // lazily initialized
+type Group[V any] struct {
+	mu sync.Mutex          // protects m
+	m  map[string]*call[V] // lazily initialized
 }
 
 // Result holds the results of Do, so they can be passed
 // on a channel.
-type Result struct {
-	Val    interface{}
+type Result[V any] struct {
+	Val    V
 	Err    error
 	Shared bool
 }
@@ -81,10 +81,10 @@ type Result struct {
 // time. If a duplicate comes in, the duplicate caller waits for the
 // original to complete and receives the same results.
 // The return value shared indicates whether v was given to multiple callers.
-func (g *Group) Do(key string, fn func() (interface{}, error)) (v interface{}, err error, shared bool) {
+func (g *Group[V]) Do(key string, fn func() (V, error)) (v V, err error, shared bool) {
 	g.mu.Lock()
 	if g.m == nil {
-		g.m = make(map[string]*call)
+		g.m = make(map[string]*call[V])
 	}
 	if c, ok := g.m[key]; ok {
 		c.dups++
@@ -98,7 +98,7 @@ func (g *Group) Do(key string, fn func() (interface{}, error)) (v interface{}, e
 		}
 		return c.val, c.err, true
 	}
-	c := new(call)
+	c := new(call[V])
 	c.wg.Add(1)
 	g.m[key] = c
 	g.mu.Unlock()
@@ -111,11 +111,11 @@ func (g *Group) Do(key string, fn func() (interface{}, error)) (v interface{}, e
 // results when they are ready.
 //
 // The returned channel will not be closed.
-func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result {
-	ch := make(chan Result, 1)
+func (g *Group[V]) DoChan(key string, fn func() (V, error)) <-chan Result[V] {
+	ch := make(chan Result[V], 1)
 	g.mu.Lock()
 	if g.m == nil {
-		g.m = make(map[string]*call)
+		g.m = make(map[string]*call[V])
 	}
 	if c, ok := g.m[key]; ok {
 		c.dups++
@@ -123,7 +123,7 @@ func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result
 		g.mu.Unlock()
 		return ch
 	}
-	c := &call{chans: []chan<- Result{ch}}
+	c := &call[V]{chans: []chan<- Result[V]{ch}}
 	c.wg.Add(1)
 	g.m[key] = c
 	g.mu.Unlock()
@@ -134,7 +134,7 @@ func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result
 }
 
 // doCall handles the single call for a key.
-func (g *Group) doCall(c *call, key string, fn func() (interface{}, error)) {
+func (g *Group[V]) doCall(c *call[V], key string, fn func() (V, error)) {
 	normalReturn := false
 	recovered := false
 
@@ -167,7 +167,7 @@ func (g *Group) doCall(c *call, key string, fn func() (interface{}, error)) {
 		} else {
 			// Normal return
 			for _, ch := range c.chans {
-				ch <- Result{c.val, c.err, c.dups > 0}
+				ch <- Result[V]{c.val, c.err, c.dups > 0}
 			}
 		}
 	}()
@@ -200,7 +200,7 @@ func (g *Group) doCall(c *call, key string, fn func() (interface{}, error)) {
 // Forget tells the singleflight to forget about a key.  Future calls
 // to Do for this key will call the function rather than waiting for
 // an earlier call to complete.
-func (g *Group) Forget(key string) {
+func (g *Group[V]) Forget(key string) {
 	g.mu.Lock()
 	delete(g.m, key)
 	g.mu.Unlock()
