@@ -41,7 +41,7 @@ func TestDownstreamErrors(t *testing.T) {
 
 		iterMock := &mockedIterator{}
 		iterMock.On("Next").Return(nilRel)
-		iterMock.On("Err").Return(defaultError)
+		iterMock.On("LastErr").Return(defaultError)
 		iterMock.On("Close")
 
 		ds := &mockedReader{}

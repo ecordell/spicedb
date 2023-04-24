@@ -297,7 +297,7 @@ func (pgd *pgDatastore) SnapshotReader(revRaw datastore.Revision) datastore.Read
 	rev := revRaw.(postgresRevision)
 
 	createTxFunc := func(ctx context.Context) (pgxcommon.DBReader, common.TxCleanupFunc, error) {
-		return pgd.readPool, func(ctx context.Context) {}, nil
+		return &pgxcommon.PoolReader{pgd.readPool}, func(ctx context.Context) {}, nil
 	}
 
 	querySplitter := common.TupleQuerySplitter{
@@ -332,7 +332,7 @@ func (pgd *pgDatastore) ReadWriteTx(
 			}
 
 			longLivedTx := func(context.Context) (pgxcommon.DBReader, common.TxCleanupFunc, error) {
-				return tx, noCleanup, nil
+				return &pgxcommon.TxReader{tx}, noCleanup, nil
 			}
 
 			querySplitter := common.TupleQuerySplitter{

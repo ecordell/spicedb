@@ -11,6 +11,7 @@ import (
 	"github.com/IBM/pgxpoolprometheus"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shopspring/decimal"
@@ -89,12 +90,12 @@ func newCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 	initCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	readPool, err := pgxpool.NewWithConfig(initCtx, readPoolConfig)
+	readPool, err := NewRetryPool(initCtx, readPoolConfig, config.maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}
 
-	writePool, err := pgxpool.NewWithConfig(initCtx, writePoolConfig)
+	writePool, err := NewRetryPool(initCtx, writePoolConfig, config.maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}
@@ -177,7 +178,6 @@ func newCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 		config.watchBufferLength,
 		keyer,
 		config.splitAtUsersetCount,
-		executeWithMaxRetries(config.maxRetries),
 		config.disableStats,
 		changefeedQuery,
 	}
@@ -202,11 +202,10 @@ type crdbDatastore struct {
 	revision.DecimalDecoder
 
 	dburl               string
-	readPool, writePool *pgxpool.Pool
+	readPool, writePool *RetryPool
 	watchBufferLength   uint16
 	writeOverlapKeyer   overlapKeyer
 	usersetBatchSize    uint16
-	execute             executeTxRetryFunc
 	disableStats        bool
 
 	beginChangefeedQuery string
@@ -226,7 +225,7 @@ func (cds *crdbDatastore) SnapshotReader(rev datastore.Revision) datastore.Reade
 		return query.From(fromStr + " AS OF SYSTEM TIME " + rev.String())
 	}
 
-	return &crdbReader{useImplicitTxFunc, querySplitter, noOverlapKeyer, nil, cds.execute, fromBuilder}
+	return &crdbReader{useImplicitTxFunc, querySplitter, noOverlapKeyer, nil, fromBuilder}
 }
 
 func noCleanup(context.Context) {}
@@ -236,62 +235,61 @@ func (cds *crdbDatastore) ReadWriteTx(
 	f datastore.TxUserFunc,
 ) (datastore.Revision, error) {
 	var commitTimestamp revision.Decimal
-	if err := cds.execute(ctx, func(ctx context.Context) error {
-		return pgx.BeginFunc(ctx, cds.writePool, func(tx pgx.Tx) error {
-			longLivedTx := func(context.Context) (pgxcommon.DBReader, common.TxCleanupFunc, error) {
-				return tx, noCleanup, nil
-			}
 
-			querySplitter := common.TupleQuerySplitter{
-				Executor:         pgxcommon.NewPGXExecutor(longLivedTx),
-				UsersetBatchSize: cds.usersetBatchSize,
-			}
+	err := cds.writePool.BeginFunc(ctx, func(tx pgx.Tx) error {
+		longLivedTx := func(context.Context) (pgxcommon.DBReader, common.TxCleanupFunc, error) {
+			return &pgxcommon.TxReader{tx}, noCleanup, nil
+		}
 
-			rwt := &crdbReadWriteTXN{
-				&crdbReader{
-					longLivedTx,
-					querySplitter,
-					cds.writeOverlapKeyer,
-					make(keySet),
-					executeOnce,
-					func(query sq.SelectBuilder, fromStr string) sq.SelectBuilder {
-						return query.From(fromStr)
-					},
+		querySplitter := common.TupleQuerySplitter{
+			Executor:         pgxcommon.NewPGXExecutor(longLivedTx),
+			UsersetBatchSize: cds.usersetBatchSize,
+		}
+
+		rwt := &crdbReadWriteTXN{
+			&crdbReader{
+				longLivedTx,
+				querySplitter,
+				cds.writeOverlapKeyer,
+				make(keySet),
+				func(query sq.SelectBuilder, fromStr string) sq.SelectBuilder {
+					return query.From(fromStr)
 				},
-				tx,
-				0,
-			}
+			},
+			tx,
+			0,
+		}
 
-			if err := f(rwt); err != nil {
-				return err
-			}
+		if err := f(rwt); err != nil {
+			return err
+		}
 
-			// Touching the transaction key happens last so that the "write intent" for
-			// the transaction as a whole lands in a range for the affected tuples.
-			for k := range rwt.overlapKeySet {
-				if _, err := tx.Exec(ctx, queryTouchTransaction, k); err != nil {
-					return fmt.Errorf("error writing overlapping keys: %w", err)
-				}
+		// Touching the transaction key happens last so that the "write intent" for
+		// the transaction as a whole lands in a range for the affected tuples.
+		for k := range rwt.overlapKeySet {
+			if _, err := tx.Exec(ctx, queryTouchTransaction, k); err != nil {
+				return fmt.Errorf("error writing overlapping keys: %w", err)
 			}
+		}
 
-			if cds.disableStats {
-				var err error
-				commitTimestamp, err = readCRDBNow(ctx, tx)
-				if err != nil {
-					return fmt.Errorf("error getting commit timestamp: %w", err)
-				}
-				return nil
-			}
-
+		if cds.disableStats {
 			var err error
-			commitTimestamp, err = updateCounter(ctx, tx, rwt.relCountChange)
+			commitTimestamp, err = readCRDBNow(ctx, tx)
 			if err != nil {
-				return fmt.Errorf("error updating relationship counter: %w", err)
+				return fmt.Errorf("error getting commit timestamp: %w", err)
 			}
-
 			return nil
-		})
-	}); err != nil {
+		}
+
+		var err error
+		commitTimestamp, err = updateCounter(ctx, tx, rwt.relCountChange)
+		if err != nil {
+			return fmt.Errorf("error updating relationship counter: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
 		return datastore.NoRevision, err
 	}
 
@@ -301,7 +299,7 @@ func (cds *crdbDatastore) ReadWriteTx(
 func (cds *crdbDatastore) ReadyState(ctx context.Context) (datastore.ReadyState, error) {
 	headMigration, err := migrations.CRDBMigrations.HeadRevision()
 	if err != nil {
-		return datastore.ReadyState{}, fmt.Errorf("invalid head migration found for postgres: %w", err)
+		return datastore.ReadyState{}, fmt.Errorf("invalid head migration found for cockroach: %w", err)
 	}
 
 	currentRevision, err := migrations.NewCRDBDriver(cds.dburl)
@@ -341,16 +339,15 @@ func (cds *crdbDatastore) HeadRevision(ctx context.Context) (datastore.Revision,
 
 func (cds *crdbDatastore) headRevisionInternal(ctx context.Context) (revision.Decimal, error) {
 	var hlcNow revision.Decimal
-	err := cds.execute(ctx, func(ctx context.Context) error {
-		return pgx.BeginTxFunc(ctx, cds.readPool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-			var fnErr error
-			hlcNow, fnErr = readCRDBNow(ctx, tx)
-			if fnErr != nil {
-				hlcNow = revision.NoRevision
-				return fmt.Errorf(errRevision, fnErr)
-			}
-			return nil
-		})
+
+	err := cds.readPool.BeginTxFunc(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var fnErr error
+		hlcNow, fnErr = readCRDBNow(ctx, tx)
+		if fnErr != nil {
+			hlcNow = revision.NoRevision
+			return fmt.Errorf(errRevision, fnErr)
+		}
+		return nil
 	})
 
 	return hlcNow, err
@@ -369,14 +366,18 @@ func (cds *crdbDatastore) Features(ctx context.Context) (*datastore.Features, er
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	time.AfterFunc(1*time.Second, cancel)
-	_, err = cds.writePool.Exec(streamCtx, fmt.Sprintf(cds.beginChangefeedQuery, tableTuple, head))
-	if err != nil && errors.Is(err, context.Canceled) {
-		features.Watch.Enabled = true
-		features.Watch.Reason = ""
-	} else if err != nil {
-		features.Watch.Enabled = false
-		features.Watch.Reason = fmt.Sprintf("Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: %s", err.Error())
-	}
+
+	_ = cds.writePool.ExecFunc(streamCtx, func(ctx context.Context, tag pgconn.CommandTag, err error) error {
+		if err != nil && errors.Is(err, context.Canceled) {
+			features.Watch.Enabled = true
+			features.Watch.Reason = ""
+		} else if err != nil {
+			features.Watch.Enabled = false
+			features.Watch.Reason = fmt.Sprintf("Range feeds must be enabled in CockroachDB and the user must have permission to create them in order to enable the Watch API: %s", err.Error())
+		}
+		return nil
+	}, fmt.Sprintf(cds.beginChangefeedQuery, tableTuple, head))
+
 	<-streamCtx.Done()
 
 	return &features, nil
@@ -394,11 +395,12 @@ func readCRDBNow(ctx context.Context, tx pgx.Tx) (revision.Decimal, error) {
 	return revision.NewFromDecimal(hlcNow), nil
 }
 
-func readClusterTTLNanos(ctx context.Context, conn *pgxpool.Pool) (int64, error) {
+func readClusterTTLNanos(ctx context.Context, conn *RetryPool) (int64, error) {
 	var target, configSQL string
-	if err := conn.
-		QueryRow(ctx, queryShowZoneConfig).
-		Scan(&target, &configSQL); err != nil {
+
+	if err := conn.QueryRowFunc(ctx, func(ctx context.Context, row pgx.Row) error {
+		return row.Scan(&target, &configSQL)
+	}, queryShowZoneConfig); err != nil {
 		return 0, err
 	}
 
