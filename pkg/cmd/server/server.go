@@ -499,9 +499,13 @@ func (c *Config) initializeGateway(ctx context.Context) (util.RunnableHTTPServer
 	}
 
 	// If the requested network is a buffered one, then disable the HTTPGateway.
-	if c.GRPCServer.Network == util.BufferedNetwork {
+	if c.GRPCServer.Network == util.BufferedNetwork || c.HTTPGateway.HTTPEnabled {
 		c.HTTPGateway.HTTPEnabled = false
-		c.HTTPGatewayUpstreamAddr = "invalidaddr:1234" // We need an address-like value here for gRPC
+		gatewayServer, err := c.HTTPGateway.Complete(zerolog.InfoLevel, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed skipping rest gateway initialization: %w", err)
+		}
+		return gatewayServer, nil, nil
 	}
 
 	var gatewayHandler http.Handler
@@ -615,3 +619,7 @@ func enableGRPCHistogram() {
 		))
 	})
 }
+
+type noopCloser struct{}
+
+func (n *noopCloser) Close() error { return nil }
